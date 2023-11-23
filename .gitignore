@@ -1,0 +1,5 @@
+box_1/
+meshes/
+meshing_cases/
+model_55.pth
+model/__pycache__/
