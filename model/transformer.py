@@ -1,63 +1,52 @@
+# %%
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.nn import TransformerEncoderLayer, TransformerEncoder
+#from torch.nn.modules.transformer import TransformerEncoderLayer
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-class TransformerEncoder(nn.Module):
-    def __init__(self, num_layers, seq_len, d_model, num_heads, d_ff, dropout=0.1):
-        super(TransformerEncoder, self).__init__()
-
-        self.dropout = nn.Dropout(p=dropout)
-        self.num_layers = num_layers
-        self.d_model = d_model
+class CustomTransformerEncoder(nn.Module):
+    def __init__(self, num_layers, d_model, n_head, long_seq_length, num_short_seqs, d_ff=1024, dropout=0.1, activation="relu"):
+        super(CustomTransformerEncoder, self).__init__()
         
-        # Multi-Head Self-Attention layers
-        self.self_attention_layers = nn.ModuleList([
-            nn.MultiheadAttention(d_model, num_heads, dropout=dropout) for _ in range(num_layers)
+        self.attention_masks = [self.custom_mask(long_seq_length, num_short_seqs) for _ in range(num_layers)]
+        self.transformer_encoder_layers = nn.ModuleList([
+            TransformerEncoderLayer(d_model=d_model, nhead=n_head, dim_feedforward=d_ff, dropout=dropout) for _ in range(num_layers)
         ])
         
-        # Feed-Forward layers
-        self.feed_forward_layers = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(d_model, d_ff),
-                nn.ReLU(),
-                nn.Linear(d_ff, d_model)
-            )
-            for _ in range(num_layers)
-        ])
+        self.norm = nn.LayerNorm(d_model)
+
+    def custom_mask(self, long_seq_length, num_short_seqs):
+        """
+        Creates a custom attention mask.
         
-        # Layer normalization
-        self.layer_norms = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(num_layers)])
+        Parameters:
+        - long_seq_length (int): Length of the long sequence.
+        - num_short_seqs (int): Number of short sequences, each of length 1.
         
-        # Reduce sequence length
-        self.fc_reduce = nn.Linear(seq_len * d_model, d_model)  # Alternative to pooling
+        Returns:
+        - attention_mask (torch.Tensor): Custom attention mask.
+        """
+        total_length = long_seq_length + num_short_seqs
         
-        # MLP transformation
-        self.fc1 = nn.Linear(d_model, d_model)  # You can choose the intermediate sizes
+        # Initialize mask with -inf
+        mask = torch.full((total_length, total_length), float('-inf'))
+
+        
+        # Long sequence can attend to itself
+        mask[:long_seq_length, :long_seq_length] = 0
+        
+        # Each short sequence can attend to the long sequence and itself
+        for idx in range(long_seq_length, total_length):
+            mask[idx, :long_seq_length] = 0  # Attend to the long sequence
+            mask[idx, idx] = 0  # Attend to itself
+            
+        return mask.to(device)
 
     def forward(self, x):
-
-        assert x.shape[-1] == self.d_model, "Input dimension and d_model must be equal"
-        
-        # Multi-Head Self-Attention and Feed-Forward layers
-        for i in range(self.num_layers):
-            # Self-Attention
-            x_attention, _ = self.self_attention_layers[i](x, x, x)
-            x = x + self.dropout(x_attention)
-            
-            # Layer normalization
-            x = self.layer_norms[i](x)
-            
-            # Feed-Forward
-            x_ff = self.feed_forward_layers[i](x)
-            x = x + self.dropout(x_ff)
-            
-            # Layer normalization
-            x = self.layer_norms[i](x)
-
-        x = x.view(1, -1)
-        x = self.fc_reduce(x)
-
-        # MLP Transformation
-        x = nn.ReLU()(self.fc1(x))
-
+        for attention_mask, layer in zip(self.attention_masks, self.transformer_encoder_layers):
+            x = x.transpose(0, 1)  # (L, N, E) -> (N, L, E) 
+            x = self.norm(x + layer(x))
+            x = x.transpose(0, 1) # (N, L, E) -> (L, N, E)
         return x
-    

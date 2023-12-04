@@ -1,8 +1,9 @@
 import torch
 import torch.nn as nn
-from model_2 import Model
+from model.model import Model
 from dataloader import CFDDataset
 from torch.utils.data import DataLoader
+from torchsummary import summary
 
 # Device configuration
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

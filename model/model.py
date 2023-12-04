@@ -1,94 +1,100 @@
-# %%
 import torch
 import torch.nn as nn
-import numpy as np
-from torch.utils.data import Dataset, DataLoader
-from transformer import TransformerEncoder
+from transformer_2 import CustomTransformerEncoder  
 from PointNet import PointNet
+from typing import Optional, Tuple
 
-# Check if GPU is available
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-n_features = 128
-n_inlets = 500
-n_outlets = 500
-n_walls = 2000
-inf_points = 100
-space_variable = 3
-seq_len = n_inlets + n_outlets + n_walls + inf_points*space_variable + space_variable
-
-inlet_point_net = PointNet(point_numbers=n_inlets, space_variable=space_variable, n_features=n_features, scaling=1).to(device)
-outlet_point_net = PointNet(point_numbers=n_outlets, space_variable=space_variable, n_features=n_features, scaling=1).to(device)
-wall_point_net = PointNet(point_numbers=n_walls, space_variable=space_variable, n_features=n_features, scaling=1).to(device)
-
-# %%
-U = torch.tensor([1, 0, 1])
-U = U.view(1, 3, 1).repeat(1, 1, 128).to(device)
-P = torch.ones(inf_points, space_variable)
-
-print(P.shape)
-P = P.view(1, inf_points*space_variable, 1).repeat(1, 1, 128).to(device)
-print(P.shape)
-# %%
-inlet_data = torch.rand(1, 500, 3).to(device)
-outlet_data = torch.rand(1, 500, 3).to(device)
-wall_data = torch.rand(1, 2000, 3).to(device)
-fluid_zone_data = torch.rand(1, 5000, 3).to(device)
-
-# %%
-transformer_input = torch.cat((inlet_point_net(inlet_data), outlet_point_net(outlet_data), wall_point_net(wall_data), U, P), dim=1)
-
-# %%
-
-transformer = TransformerEncoder(seq_len= seq_len, d_model=n_features, num_heads=8, num_layers=6, d_ff=1024, dropout=0.1).to(device)
-
-print(transformer(transformer_input).shape)
-# %%
-
-# %%
-
-print((transformer(transformer_input)).shape)
+# Hyperparameters
+D_MODEL = 512
+NUM_HEADS = 8
+NUM_LAYERS = 4
+D_FF = 1024
+DROPOUT = 0.1
+N_INLETS = 500
+N_OUTLETS = 500
+N_WALLS = 2000
+N_FEATURES = 128
+N_POINTS = 1000
+SPACE_VARIABLE = 3
+SEQ_LEN = 1 + 1 + 1 + 1 + N_POINTS 
 
 class Model(nn.Module):
-    def __init__(self, space_variable=3, d_model=128, num_heads=8, num_layers=6, d_ff=1024, dropout=0.1):
-        super(TransformerEncoder, self).__init__()
+    """ 
+    Model combining PointNet and Transformer Encoder.
+    
+    PointNet is used for feature extraction from point clouds representing inlets, outlets, and walls.
+    Transformer Encoder is used for sequence processing of the spatial data.
+    """
+    
+    def __init__(self):
+        super(Model, self).__init__()
         
-        self.d_model = d_model
-        self.num_heads = num_heads
-        self.num_layers = num_layers
-        self.d_ff = d_ff
-        self.inf_points = inf_points
-        self.space_variable = space_variable
-        self.seq_len = n_inlets + n_outlets + n_walls + inf_points*space_variable + space_variable
+        self.pos_linear = nn.Linear(3, D_MODEL)
+        self.inlet_vel_linear = nn.Linear(3, D_MODEL)
+
+        # PointNet layers for different features
+        self.inlet_point_net = PointNet(point_numbers=N_INLETS, space_variable=SPACE_VARIABLE, n_features=N_FEATURES, scaling=1)
+        self.outlet_point_net = PointNet(point_numbers=N_OUTLETS, space_variable=SPACE_VARIABLE, n_features=N_FEATURES, scaling=1)
+        self.wall_point_net = PointNet(point_numbers=N_WALLS, space_variable=SPACE_VARIABLE, n_features=N_FEATURES, scaling=1)
+
+        # Transformer encoder layer
+        self.transformer = CustomTransformerEncoder(long_seq_length=49, num_short_seqs=N_POINTS, d_model=D_MODEL, n_head=NUM_HEADS, num_layers=NUM_LAYERS, d_ff=D_FF, dropout=DROPOUT)
         
-        self.dropout = nn.Dropout(p=dropout)
-        self.inlet_point_net = PointNet(point_numbers=n_inlets, space_variable=space_variable, n_features=n_features, scaling=1)
-        self.outlet_point_net = PointNet(point_numbers=n_outlets, space_variable=space_variable, n_features=n_features, scaling=1)
-        self.wall_point_net = PointNet(point_numbers=n_walls, space_variable=space_variable, n_features=n_features, scaling=1)
-
-        self.transformer = TransformerEncoder(seq_len= seq_len, d_model=d_model, num_heads=num_heads, num_layers=num_layers, d_ff=1024, dropout=0.1)
-        self.fc = nn.Linear(d_model, 4)
-
-    def forward(self, inlet_points, outlet_points, wall_points, positions, pressure, velocity):
+        # Final fully connected layer
+        self.fc1 = nn.Linear(D_MODEL, 1024)
+        self.fc2 = nn.Linear(1024, 4)
         
-        positions = positions.view(1, self.inf_points*self.space_variable, 1).repeat(1, 1, 128)
 
+    def forward(self, 
+                inlet_points: torch.Tensor, 
+                outlet_points: torch.Tensor, 
+                wall_points: torch.Tensor, 
+                positions: torch.Tensor, 
+                inlet_velocity: torch.Tensor):
+        """
+        Forward pass of the model.
+        
+        Parameters:
+        - inlet_points: Point cloud for the inlets
+        - outlet_points: Point cloud for the outlets
+        - wall_points: Point cloud for the walls
+        - positions: Spatial positions
+        - inlet_velocity: Boundary condition for inlet velocity
+        
+        Returns:
+        - p: Predicted pressure
+        - u, v, w: Predicted velocity components
+        """
+    
+
+        # Reshape and tile positions and inlet_velocity
+        #positions = positions.view(positions.size(0), INF_POINTS * SPACE_VARIABLE, 1).expand(-1, -1, D_MODEL)
+        #inlet_velocity = inlet_velocity.view(inlet_velocity.size(0), SPACE_VARIABLE, 1).expand(-1, -1, D_MODEL)
+        
+        # Pass through the linear layers
+        positions = self.pos_linear(positions)
+        inlet_velocity = self.inlet_vel_linear(inlet_velocity)
+
+        # Generate features using PointNet
         inlet_features = self.inlet_point_net(inlet_points)
         outlet_features = self.outlet_point_net(outlet_points)
         wall_features = self.wall_point_net(wall_points)
-
-        x = torch.cat((inlet_features, outlet_features, wall_features, positions), dim=1)
+        
+        # Concatenate all features
+        x = torch.cat((inlet_features, outlet_features, wall_features, positions, inlet_velocity), dim=1)
+        
+        # Pass through the transformer encoder
         x = self.transformer(x)
-        x = self.fc(x)
+        
+        # Removing the first four elements from the sequence
+        x = x[:, 49:, :]
 
-        ### x = [p, u, v, w]
-        p = x[:, 0]
-        u = x[:, 1]
-        v = x[:, 2]
-        w = x[:, 3]
-
-        ### Calculate loss if training(pressure and velocity are not None)
-        if pressure is not None and velocity is not None:
-            loss = torch.mean((p - pressure)**2 + (u - velocity[:, 0])**2 + (v - velocity[:, 1])**2 + (w - velocity[:, 2])**2)
-            return p, u, v, w, loss
-        else:
-            return p, u, v, w
+        # Pass through the final fully connected layers
+        x = self.fc1(x)
+        x = self.fc2(x)
+        
+        # Extract individual components
+        p, u, v, w = x[:, :, 0], x[:, :, 1], x[:, :, 2], x[:, :, 3]
+        
+        return p, u, v, w
+    
