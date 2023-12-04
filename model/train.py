@@ -21,10 +21,10 @@ N_FEATURES = 128
 N_POINTS = 1000
 SPACE_VARIABLE = 3
 SEQ_LEN = (1 + 1 + 1)*16 + 1 + N_POINTS 
-N_EPOCHS = 1
+N_EPOCHS = 10
 BATCH_SIZE = 1
 meshing_dir = '/home/aseem/OpenFOAM/aseem-11/run/training_data/meshing_cases'
-train_cases_list = ['holed_cylinder_5', 'holed_cylinder_6', 'holed_cylinder_8', 'holed_cylinder_9', 'holed_cylinder_10', 'holed_cylinder_11', 'holed_cylinder_12', 'random_channel_5', 'random_channel_19', 'holed_cylinder_23', 'random_channel_45', 'random_channel_78']
+train_cases_list = ['random_channel_70', 'random_channel_31', 'holed_cylinder_7',  'holed_cylinder_15', 'holed_cylinder_33']
 INLET_VELOCITY = torch.tensor([1, 1, 1], dtype=torch.float).unsqueeze(0).unsqueeze(0).repeat(BATCH_SIZE, 1, 1).to(device)
 model = Model()
 model.to(device)
@@ -43,6 +43,7 @@ loss_list = []
 for epoch in range(N_EPOCHS):
     model.train()
     total_loss = 0
+    total_percentage_error = 0
 
     for i, data in enumerate(dataloader):
         # Data to feed to the PointNet
@@ -63,6 +64,41 @@ for epoch in range(N_EPOCHS):
         u = velocity[:, :, 0]
         v = velocity[:, :, 1]
         w = velocity[:, :, 2]
-        
-        print(u[0])
-        
+
+        # Run the model
+        pressure_pred, u_pred, v_pred, w_pred = model(inlet_point_net, outlet_point_net, wall_point_net, positions, current_inlet_velocity)
+
+        # Calculate loss
+        loss_pressure = fn_loss(pressure_pred, pressure)
+        loss_u = fn_loss(u_pred, u)
+        loss_v = fn_loss(v_pred, v)
+        loss_w = fn_loss(w_pred, w)
+        loss = loss_pressure + loss_u + loss_v + loss_w
+
+        # Backpropagation
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+
+        # Calculate mean percentage error for each prediction
+        mae_pressure = torch.mean(torch.abs((pressure - pressure_pred))) * 100
+        mae_u = torch.mean(torch.abs((u - u_pred))) * 100
+        mae_v = torch.mean(torch.abs((v - v_pred))) * 100
+        mae_w = torch.mean(torch.abs((w - w_pred))) * 100
+
+        # Calculate mean of MPEs
+        mean_absolute_error = (mae_pressure + mae_u + mae_v + mae_w) / 4
+
+        # Accumulate loss
+        total_loss += loss.item()
+        total_percentage_error += mean_absolute_error.item()
+
+        if (i+1) % 100 == 0:
+            print(f'Epoch [{epoch+1}/{N_EPOCHS}], Step [{i+1}/{len(dataloader)}], Loss: {loss.item():.4f}')
+
+    # Compute average loss and MPE for the epoch
+    avg_loss = total_loss / len(dataloader)
+    avg_mpe = total_percentage_error / len(dataloader)
+    loss_list.append(avg_loss)
+    print(f'Epoch [{epoch+1}/{N_EPOCHS}] Average Loss: {avg_loss:.4f}, Average Mean Absolute Error: {avg_mpe:.2f}')
